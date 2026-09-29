@@ -71,6 +71,7 @@ function emptyDraft(){
     fields:{sasaran:'',proses:'',alatBahan:'',capaian:'',lintasProgram:'',lintasSektor:'',umpanBalik:''},
     extraFieldValues:{},
     masalah:'', rekomendasi:'',
+    reportTemplateId:null,
     pjId:(SETTINGS && SETTINGS.defaultPjId)||'pj1',
     photos:[],
     collage:{template:'auto', ratio:'1:1', gap:8}
@@ -143,7 +144,8 @@ function lpdFromRow(r){
     hari:r.hari, tanggal:r.tanggal, kegiatan:r.kegiatan, lokasi:r.lokasi,
     desaId:r.desa_id||'', dusunId:r.dusun_id||'', rt:r.rt||'',
     officers:r.officers||[], fields:r.fields||{}, extraFieldValues:r.extra_field_values||{},
-    masalah:r.masalah, rekomendasi:r.rekomendasi, pjId:r.pj_id, photos:r.photos||[], collage:r.collage||{template:'auto',ratio:'1:1',gap:8},
+    masalah:r.masalah, rekomendasi:r.rekomendasi, reportTemplateId:r.report_template_id||null,
+    pjId:r.pj_id, photos:r.photos||[], collage:r.collage||{template:'auto',ratio:'1:1',gap:8},
     createdAt:r.created_at, updatedAt:r.updated_at
   };
 }
@@ -155,7 +157,8 @@ function lpdToRow(d){
     hari:d.hari, tanggal:d.tanggal||null, kegiatan:d.kegiatan, lokasi:d.lokasi,
     desa_id:d.desaId||null, dusun_id:d.dusunId||null, rt:d.rt||null,
     officers:d.officers, fields:d.fields, extra_field_values:d.extraFieldValues,
-    masalah:d.masalah, rekomendasi:d.rekomendasi, pj_id:d.pjId, photos:d.photos, collage:d.collage||{template:'auto',ratio:'1:1',gap:8},
+    masalah:d.masalah, rekomendasi:d.rekomendasi, report_template_id:d.reportTemplateId||null,
+    pj_id:d.pjId, photos:d.photos, collage:d.collage||{template:'auto',ratio:'1:1',gap:8},
     updated_at:new Date().toISOString()
   };
 }
@@ -336,32 +339,47 @@ function subscribeOfficers(){
     async ()=>{ await loadOfficers(); if(ROUTE==='new'||ROUTE==='edit') render(); }).subscribe();
 }
 async function loadReportMaster(){
-  const {data,error}=await sb.from('master_laporan_kegiatan')
-    .select('id,bagian,judul,isi,aktif,urutan')
-    .eq('aktif',true)
-    .order('bagian',{ascending:true})
-    .order('urutan',{ascending:true})
-    .order('judul',{ascending:true});
+  const {data,error}=await sb.from('laporan_kegiatan')
+    .select('Id,sasaran,proses,alat_bahan,capaian,lintas_program,lintas_sektor,umpan_balik,masalah,rekomendasi')
+    .order('Id',{ascending:false});
   if(error){
-    console.warn('[SI-LPD] Master laporan belum tersedia:', error.message);
+    console.warn('[SI-LPD] Template laporan belum tersedia:', error.message);
     REPORT_MASTER=[];
     return;
   }
-  REPORT_MASTER=data||[];
+  REPORT_MASTER=(data||[]).map(r=>({
+    id:r.Id,
+    sasaran:r.sasaran||'',
+    proses:r.proses||'',
+    alatBahan:r.alat_bahan||'',
+    capaian:r.capaian||'',
+    lintasProgram:r.lintas_program||'',
+    lintasSektor:r.lintas_sektor||'',
+    umpanBalik:r.umpan_balik||'',
+    masalah:r.masalah||'',
+    rekomendasi:r.rekomendasi||''
+  }));
 }
 function subscribeReportMaster(){
-  reportMasterChannel = sb.channel('report-master-ch').on('postgres_changes',{event:'*',schema:'public',table:'master_laporan_kegiatan'},
-    async ()=>{ await loadReportMaster(); if(ROUTE==='new'||ROUTE==='edit') render(); }).subscribe();
+  reportMasterChannel = sb.channel('report-master-ch').on(
+    'postgres_changes',
+    {event:'*',schema:'public',table:'laporan_kegiatan'},
+    async ()=>{ await loadReportMaster(); if(ROUTE==='new'||ROUTE==='edit') render(); }
+  ).subscribe();
 }
-function reportMasterOptions(key){
-  return REPORT_MASTER.filter(x=>x.bagian===key);
-}
-function setReportMaster(key,id){
+function applyReportTemplate(id){
   const item=REPORT_MASTER.find(x=>String(x.id)===String(id));
   if(!item) return;
-  if(key==='masalah') DRAFT.masalah=item.isi||'';
-  else if(key==='rekomendasi') DRAFT.rekomendasi=item.isi||'';
-  else DRAFT.fields[key]=item.isi||'';
+  DRAFT.reportTemplateId=item.id;
+  DRAFT.fields.sasaran=item.sasaran;
+  DRAFT.fields.proses=item.proses;
+  DRAFT.fields.alatBahan=item.alatBahan;
+  DRAFT.fields.capaian=item.capaian;
+  DRAFT.fields.lintasProgram=item.lintasProgram;
+  DRAFT.fields.lintasSektor=item.lintasSektor;
+  DRAFT.fields.umpanBalik=item.umpanBalik;
+  DRAFT.masalah=item.masalah;
+  DRAFT.rekomendasi=item.rekomendasi;
   render();
 }
 function reportValue(key){
@@ -703,21 +721,26 @@ function stepKegiatan(){
     <div class="hint">Kolom ringkasan di bagian atas surat otomatis mengikuti isian ini.</div>`;
 }
 function stepLaporan(){
-  const enabled=SETTINGS.baseFields||{}; const extra=SETTINGS.extraFields||[];
+  const enabled=SETTINGS.baseFields||{};
+  const extra=SETTINGS.extraFields||[];
+  const fields=REPORT_MASTER_FIELDS.filter(f=>f.key==='masalah'||f.key==='rekomendasi'||enabled[f.key]!==false);
+  const options=REPORT_MASTER.map(x=>`<option value="${x.id}" ${String(DRAFT.reportTemplateId)===String(x.id)?'selected':''}>ID ${escapeHtml(String(x.id))}</option>`).join('');
   return `<h3>3. Laporan Kegiatan</h3>
-    <div class="hint" style="margin-bottom:12px">Pilih uraian dari <b>database Supabase</b>. Setelah dipilih, isi otomatis masuk ke kolom dan masih dapat diedit sebelum laporan disimpan.</div>
-    ${REPORT_MASTER_FIELDS.filter(f=>f.key==='masalah'||f.key==='rekomendasi'||enabled[f.key]!==false).map(f=>{
-      const opts=reportMasterOptions(f.key);
-      const value=reportValue(f.key);
-      return `<div class="report-master-row">
-        <label>${f.label}</label>
-        <select onchange="setReportMaster('${f.key}',this.value)">
-          <option value="">— Pilih dari database Supabase —</option>
-          ${opts.map(x=>`<option value="${x.id}">${escapeHtml(x.judul)}</option>`).join('')}
-        </select>
-        <textarea oninput="setReportValue('${f.key}',this.value)" placeholder="Isi ${escapeHtml(f.label.replace(/^[a-i]\. /,''))}...">${escapeHtml(value)}</textarea>
-      </div>`;
-    }).join('')}
+    <div class="hint" style="margin-bottom:12px">
+      Pilih <b>1 ID / Template Laporan</b>. Semua 9 bagian akan otomatis diambil dari <b>baris yang sama</b>, lalu dapat diedit sebelum disimpan.
+    </div>
+    <div class="report-master-row" style="margin-bottom:16px">
+      <label><b>Template / ID Laporan</b></label>
+      <select onchange="applyReportTemplate(this.value)">
+        <option value="">— Pilih ID / Template Laporan —</option>
+        ${options}
+      </select>
+      ${DRAFT.reportTemplateId?`<div class="hint" style="margin-top:8px">✓ Template ID <b>${escapeHtml(String(DRAFT.reportTemplateId))}</b> telah dimuat.</div>`:''}
+    </div>
+    ${fields.map(f=>`<div class="report-master-row">
+      <label><b>${escapeHtml(f.label)}</b></label>
+      <textarea oninput="setReportValue('${f.key}',this.value)" placeholder="Isi ${escapeHtml(f.label.replace(/^[a-i]\. /,''))}...">${escapeHtml(reportValue(f.key))}</textarea>
+    </div>`).join('')}
     ${extra.length?`<div class="hint" style="margin-top:6px">Pertanyaan tambahan (diatur admin):</div>`:''}
     ${extra.map(ef=>`<label>${escapeHtml(ef.label)}</label><textarea oninput="DRAFT.extraFieldValues['${ef.id}']=this.value">${escapeHtml(DRAFT.extraFieldValues[ef.id]||'')}</textarea>`).join('')}`;
 }
